@@ -116,7 +116,7 @@ bot.on('message', async (ctx) => {
 
 // Verify requests on this path really came from Telegram via the secret
 // token we register in /api/setup-webhook below.
-app.use('/api/telegram-webhook', bot.webhookCallback('/api/telegram-webhook', {
+app.use('/api/telegram-webhook', bot.webhookCallback('/', {
   secretToken: SETUP_SECRET,
 }));
 
