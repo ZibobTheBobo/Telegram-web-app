@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Star Forge</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    --bg-0: #0b0f1a;
+    --bg-1: #131a2b;
+    --panel: #171f34;
+    --ember: #ff8a3d;
+    --ember-dim: #a8551f;
+    --gold: #ffd166;
+    --text: #eef1f8;
+    --text-dim: #8891ab;
+    --border: #262f48;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: radial-gradient(circle at 50% 0%, var(--bg-1), var(--bg-0) 70%);
+    color: var(--text);
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    min-height: 100vh;
+    overscroll-behavior: none;
+    user-select: none;
+  }
+  .wrap { max-width: 480px; margin: 0 auto; padding: 20px 16px 90px; }
+  header { text-align: center; padding: 14px 0 4px; }
+  header .eyebrow {
+    font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase;
+    color: var(--text-dim); margin-bottom: 4px;
+  }
+  header h1 {
+    margin: 0; font-size: 26px; font-weight: 800;
+    background: linear-gradient(90deg, var(--gold), var(--ember));
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .balance-row {
+    display: flex; justify-content: center; align-items: baseline;
+    gap: 8px; margin: 18px 0 26px;
+  }
+  .balance-num { font-size: 44px; font-weight: 800; letter-spacing: -0.02em; }
+  .balance-label { font-size: 13px; color: var(--text-dim); }
+
+  .forge {
+    position: relative; width: 220px; height: 220px; margin: 0 auto 22px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 35% 30%, #2a3557, var(--panel) 70%);
+    border: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 0 0 8px rgba(255,138,61,0.04), 0 20px 60px -20px rgba(255,138,61,0.35);
+    cursor: pointer;
+    transition: transform 0.08s ease;
+  }
+  .forge:active { transform: scale(0.94); }
+  .forge svg { width: 88px; height: 88px; }
+  .forge .ring {
+    position: absolute; inset: -1px; border-radius: 50%;
+    border: 1px dashed var(--ember-dim); opacity: 0.5;
+    animation: spin 18s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .tap-hint { text-align: center; color: var(--text-dim); font-size: 13px; margin-bottom: 28px; }
+
+  .floater {
+    position: fixed; pointer-events: none; font-weight: 700; color: var(--gold);
+    font-size: 18px; animation: floatUp 0.7s ease-out forwards;
+  }
+  @keyframes floatUp {
+    from { opacity: 1; transform: translateY(0); }
+    to { opacity: 0; transform: translateY(-46px); }
+  }
+
+  .section-title {
+    font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--text-dim); margin: 26px 0 10px 2px;
+  }
+
+  .shop-grid { display: grid; gap: 10px; }
+  .item {
+    display: flex; align-items: center; justify-content: space-between;
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 14px; padding: 14px 16px;
+  }
+  .item .meta .name { font-weight: 700; font-size: 15px; }
+  .item .meta .desc { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+  .buy-btn {
+    display: flex; align-items: center; gap: 6px;
+    background: linear-gradient(90deg, var(--ember), var(--gold));
+    color: #1a1204; font-weight: 800; font-size: 13px;
+    border: none; border-radius: 10px; padding: 9px 14px;
+    cursor: pointer; white-space: nowrap;
+  }
+  .buy-btn:disabled { opacity: 0.6; }
+
+  .status {
+    position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
+    background: var(--panel); border: 1px solid var(--border);
+    padding: 8px 16px; border-radius: 999px; font-size: 12px; color: var(--text-dim);
+    max-width: 90%; text-align: center;
+  }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div class="eyebrow">Star Forge</div>
+      <h1>Tap. Forge. Earn.</h1>
+    </header>
+
+    <div class="balance-row">
+      <div class="balance-num" id="balance">0</div>
+      <div class="balance-label">coins</div>
+    </div>
+
+    <div class="forge" id="forge">
+      <div class="ring"></div>
+      <svg viewBox="0 0 24 24" fill="none">
+        <path d="M12 2L2 7v10l10 5 10-5V7L12 2z" stroke="#ffd166" stroke-width="1.4" fill="rgba(255,209,102,0.08)"/>
+        <path d="M12 2v20M2 7l10 5 10-5M2 17l10-5 10 5" stroke="#ff8a3d" stroke-width="1" opacity="0.6"/>
+      </svg>
+    </div>
+    <div class="tap-hint">Tap the forge to earn coins</div>
+
+    <div class="section-title">Shop &middot; pay with Telegram Stars</div>
+    <div class="shop-grid" id="shop"></div>
+  </div>
+
+  <div class="status" id="status">Connecting to Telegram&hellip;</div>
+
+<script>
+const tg = window.Telegram?.WebApp;
+if (tg) { tg.ready(); tg.expand(); }
+
+const initData = tg?.initData || '';
+const statusEl = document.getElementById('status');
+const balanceEl = document.getElementById('balance');
+const forgeEl = document.getElementById('forge');
+const shopEl = document.getElementById('shop');
+
+const SHOP_ITEMS = [
+  { id: 'coin_pack_small', name: '500 Coins', desc: 'A small pile of coins', stars: 25 },
+  { id: 'coin_pack_large', name: '3000 Coins', desc: 'A big pile of coins', stars: 100 },
+  { id: 'double_tap_boost', name: 'Double Tap Boost', desc: 'x2 coins per tap for 1 hour', stars: 50 },
+];
+
+function setStatus(text) { statusEl.textContent = text; }
+
+function renderShop() {
+  shopEl.innerHTML = '';
+  for (const item of SHOP_ITEMS) {
+    const row = document.createElement('div');
+    row.className = 'item';
+    row.innerHTML = `
+      <div class="meta">
+        <div class="name">${item.name}</div>
+        <div class="desc">${item.desc}</div>
+      </div>
+      <button class="buy-btn" data-id="${item.id}">⭐ ${item.stars}</button>
+    `;
+    shopEl.appendChild(row);
+  }
+  shopEl.querySelectorAll('.buy-btn').forEach(btn => {
+    btn.addEventListener('click', () => buyItem(btn.dataset.id, btn));
+  });
+}
+
+async function api(path, body) {
+  const res = await fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ initData, ...body }),
+  });
+  if (!res.ok) throw new Error((await res.json()).error || 'Request failed');
+  return res.json();
+}
+
+async function refreshBalance() {
+  try {
+    const data = await api('/api/me', {});
+    balanceEl.textContent = data.balance;
+    setStatus('Connected');
+  } catch (e) {
+    setStatus('Open this inside Telegram to play');
+  }
+}
+
+async function tap(evt) {
+  forgeEl.style.transform = 'scale(0.94)';
+  setTimeout(() => (forgeEl.style.transform = ''), 90);
+  try {
+    const data = await api('/api/tap', {});
+    balanceEl.textContent = data.balance;
+    spawnFloater(evt, '+1');
+    tg?.HapticFeedback?.impactOccurred('light');
+  } catch (e) {
+    setStatus('Open this inside Telegram to play');
+  }
+}
+
+function spawnFloater(evt, text) {
+  const el = document.createElement('div');
+  el.className = 'floater';
+  el.textContent = text;
+  const rect = forgeEl.getBoundingClientRect();
+  el.style.left = (rect.left + rect.width / 2 - 10) + 'px';
+  el.style.top = (rect.top + 20) + 'px';
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 700);
+}
+
+async function buyItem(itemId, btn) {
+  btn.disabled = true;
+  const originalText = btn.textContent;
+  btn.textContent = 'Opening…';
+  try {
+    const { invoiceLink } = await api('/api/create-invoice', { itemId });
+    tg.openInvoice(invoiceLink, async (status) => {
+      btn.disabled = false;
+      btn.textContent = originalText;
+      if (status === 'paid') {
+        setStatus('Purchase complete!');
+        refreshBalance();
+      } else if (status === 'cancelled') {
+        setStatus('Purchase cancelled');
+      } else {
+        setStatus('Purchase ' + status);
+      }
+    });
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = originalText;
+    setStatus(e.message);
+  }
+}
+
+forgeEl.addEventListener('click', tap);
+renderShop();
+refreshBalance();
+</script>
+</body>
+</html>
