@@ -7,13 +7,11 @@ two things you should know about:
 
 1. **No `app.listen()`** — `api/index.js` exports the Express app, and
    Vercel handles running it per-request.
-2. **In-memory storage is unreliable here.** The `userBalances` Map in
-   `api/index.js` may reset between requests, since there's no single
-   long-running process holding it in memory. Fine for testing the
-   Stars payment flow end to end. **Before real players use this, swap it
-   for a real datastore** — Upstash Redis or Vercel KV both have free
-   tiers with no card and are simple to wire in (ask me when you're ready
-   for that step).
+2. **Balances persist via Upstash Redis.** Set up in step 3a below — takes
+   about 2 minutes, no card required. Until you add the two Redis env
+   vars, the app still runs using an in-memory fallback, but balances will
+   reset unpredictably (that's the old behavior). Once Redis is
+   configured, balances persist properly across refreshes and redeploys.
 
 ## 1. Push this project to GitHub
 
@@ -43,11 +41,31 @@ Then create a repo on GitHub and follow its instructions to push.
 In your Vercel project: **Settings → Environment Variables**, add:
 
 - `BOT_TOKEN` — your bot's token from BotFather
-- `SETUP_SECRET` — make up any random string yourself (e.g. a long
-  password). This protects the one-time webhook setup endpoint so a
-  stranger can't hijack your bot's webhook.
+- `SETUP_SECRET` — make up any random string yourself (letters, numbers,
+  underscores, hyphens only). This protects the one-time webhook setup
+  endpoint so a stranger can't hijack your bot's webhook.
 
 Then **Deployments → \[latest] → Redeploy** so the new env vars take effect.
+
+### 3a. Set up persistent storage (Upstash Redis)
+
+Without this, balances reset unpredictably between requests — this is the
+step that fixes that.
+
+1. Go to [upstash.com](https://upstash.com), sign up (GitHub login works,
+   no card needed).
+2. **Create Database** → give it any name → choose a region close to you
+   → Create.
+3. On the database's page, find **REST API** section — copy the
+   `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` values shown
+   there.
+4. Back in Vercel: **Settings → Environment Variables**, add both as new
+   variables with those exact names and the values you copied.
+5. **Deployments → \[latest] → Redeploy** so the app picks them up.
+
+That's it — no schema or setup needed, the app creates its keys
+automatically the first time someone taps or buys something. Balances
+will now survive refreshes, redeploys, and cold starts.
 
 ## 4. Register the webhook (one-time step)
 
@@ -73,3 +91,46 @@ Open your bot in Telegram, launch the Mini App, tap a few times, try a
 shop purchase. Because of the in-memory storage caveat above, if your
 balance seems to reset unexpectedly between sessions, that's the known
 limitation — not a bug in the payment logic itself.
+
+## 7. Refunds and support
+
+Every Stars purchase is now saved (who bought, what, how many Stars, and
+the charge id). Only you can use the two owner endpoints below, because
+they need your `SETUP_SECRET`. Keep these URLs private.
+
+**See recent purchases and their charge ids**
+
+```
+https://your-project.vercel.app/api/charges?secret=YOUR_SETUP_SECRET
+```
+
+**Refund one purchase** (copy its `chargeId` from the list above)
+
+```
+https://your-project.vercel.app/api/refund?secret=YOUR_SETUP_SECRET&charge_id=THE_CHARGE_ID
+```
+
+On success you get `{"ok":true,...,"coinsRemoved":500}`. The buyer gets
+their Stars back, and the coins from that purchase are taken off their
+balance (never below zero). Each charge can only be refunded once.
+
+**Purchases made before this update** weren't saved. To refund one, find
+its charge id in Vercel logs (search "Payment received") and add the
+buyer's Telegram user id:
+
+```
+.../api/refund?secret=YOUR_SETUP_SECRET&charge_id=THE_CHARGE_ID&user_id=BUYER_USER_ID
+```
+
+That refunds the Stars only, since the coin amount isn't known.
+
+**Support commands.** Telegram expects Stars bots to answer `/paysupport`
+and `/terms`; both are built in. Add one more Vercel environment variable,
+`SUPPORT_CONTACT`, set to your Telegram username (for example `@yourname`)
+so buyers know who to contact, then redeploy. Also add them in @BotFather
+with `/setcommands`:
+
+```
+paysupport - Help with a purchase or refund
+terms - Purchase terms
+```

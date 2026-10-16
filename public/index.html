@@ -103,6 +103,24 @@
     padding: 8px 16px; border-radius: 999px; font-size: 12px; color: var(--text-dim);
     max-width: 90%; text-align: center;
   }
+
+  .lb-list { display: flex; flex-direction: column; gap: 8px; }
+  .lb-row {
+    display: flex; align-items: center; gap: 10px;
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 12px; padding: 10px 14px;
+  }
+  .lb-row.me { border-color: var(--ember); background: #1d2440; }
+  .lb-rank {
+    width: 26px; text-align: center; font-weight: 800; font-size: 14px;
+    color: var(--text-dim);
+  }
+  .lb-rank.top1 { color: #ffd166; font-size: 18px; }
+  .lb-rank.top2 { color: #cbd5e1; font-size: 16px; }
+  .lb-rank.top3 { color: #d99a5f; font-size: 16px; }
+  .lb-name { flex: 1; font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .lb-score { font-size: 14px; font-weight: 800; color: var(--gold); }
+  .lb-empty { color: var(--text-dim); font-size: 13px; text-align: center; padding: 10px 0; }
 </style>
 </head>
 <body>
@@ -128,6 +146,11 @@
 
     <div class="section-title">Shop &middot; pay with Telegram Stars</div>
     <div class="shop-grid" id="shop"></div>
+
+    <div class="section-title">Leaderboard &middot; top forgers</div>
+    <div class="lb-list" id="leaderboard">
+      <div class="lb-empty">Loading&hellip;</div>
+    </div>
   </div>
 
   <div class="status" id="status">Connecting to Telegram&hellip;</div>
@@ -189,6 +212,46 @@ async function refreshBalance() {
   }
 }
 
+const leaderboardEl = document.getElementById('leaderboard');
+const myUserId = tg?.initDataUnsafe?.user?.id;
+
+async function refreshLeaderboard() {
+  try {
+    const res = await fetch('/api/leaderboard?limit=10');
+    const data = await res.json();
+    renderLeaderboard(data.leaderboard || []);
+  } catch (e) {
+    leaderboardEl.innerHTML = '<div class="lb-empty">Couldn\'t load leaderboard</div>';
+  }
+}
+
+function renderLeaderboard(entries) {
+  if (!entries.length) {
+    leaderboardEl.innerHTML = '<div class="lb-empty">No forgers yet — be the first!</div>';
+    return;
+  }
+  leaderboardEl.innerHTML = '';
+  entries.forEach((entry, i) => {
+    const rank = i + 1;
+    const row = document.createElement('div');
+    row.className = 'lb-row' + (myUserId && String(entry.userId) === String(myUserId) ? ' me' : '');
+    const rankClass = rank === 1 ? 'top1' : rank === 2 ? 'top2' : rank === 3 ? 'top3' : '';
+    const medal = rank === 1 ? '🥇' : rank === 2 ? '🥈' : rank === 3 ? '🥉' : rank;
+    row.innerHTML = `
+      <div class="lb-rank ${rankClass}">${medal}</div>
+      <div class="lb-name">${escapeHtml(entry.name)}</div>
+      <div class="lb-score">${entry.score}</div>
+    `;
+    leaderboardEl.appendChild(row);
+  });
+}
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
 async function tap(evt) {
   forgeEl.style.transform = 'scale(0.94)';
   setTimeout(() => (forgeEl.style.transform = ''), 90);
@@ -225,6 +288,7 @@ async function buyItem(itemId, btn) {
       if (status === 'paid') {
         setStatus('Purchase complete!');
         refreshBalance();
+        refreshLeaderboard();
       } else if (status === 'cancelled') {
         setStatus('Purchase cancelled');
       } else {
@@ -241,6 +305,8 @@ async function buyItem(itemId, btn) {
 forgeEl.addEventListener('click', tap);
 renderShop();
 refreshBalance();
+refreshLeaderboard();
+setInterval(refreshLeaderboard, 20000); // keep ranks reasonably fresh without hammering the API
 </script>
 </body>
 </html>
