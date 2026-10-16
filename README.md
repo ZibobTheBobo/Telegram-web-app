@@ -134,3 +134,32 @@ with `/setcommands`:
 paysupport - Help with a purchase or refund
 terms - Purchase terms
 ```
+
+## 8. Refund many purchases at once
+
+This reads Telegram's own record of your bot's Stars payments, so it also
+finds purchases made before charges were saved. It refunds real money to
+real buyers, so it starts with a preview that changes nothing.
+
+**Step 1: preview** (shows how many purchases and how many Stars would be refunded)
+
+```
+https://your-project.vercel.app/api/refund-all?secret=YOUR_SETUP_SECRET
+```
+
+**Step 2a: refund only your own purchases** (use your Telegram user id)
+
+```
+https://your-project.vercel.app/api/refund-all?secret=YOUR_SETUP_SECRET&user_id=YOUR_USER_ID&confirm=yes
+```
+
+**Step 2b: refund every unrefunded purchase from every buyer**
+
+```
+https://your-project.vercel.app/api/refund-all?secret=YOUR_SETUP_SECRET&confirm=yes
+```
+
+Large lists are refunded in rounds to fit Vercel's time limit. If the
+answer shows `"remaining"` above 0, open the same link again until it
+reaches 0. Purchases that were saved by the app also lose the coins they
+granted; older purchases get the Stars back only.

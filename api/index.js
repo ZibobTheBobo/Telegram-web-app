@@ -114,6 +114,23 @@ async function takeRefundLock(chargeId) {
   return true;
 }
 
+// Which of these charge ids has this app already refunded? Protects against
+// Telegram's history lagging behind a refund we just made.
+async function lockedChargeIds(ids) {
+  const locked = new Set();
+  if (!ids.length) return locked;
+  if (redis) {
+    for (let i = 0; i < ids.length; i += 100) {
+      const chunk = ids.slice(i, i + 100);
+      const vals = await redis.mget(...chunk.map((id) => `refund_lock:${id}`));
+      chunk.forEach((id, j) => { if (vals[j] !== null && vals[j] !== undefined) locked.add(id); });
+    }
+    return locked;
+  }
+  ids.forEach((id) => { if (memRefundLocks.has(id)) locked.add(id); });
+  return locked;
+}
+
 async function releaseRefundLock(chargeId) {
   if (redis) return redis.del(`refund_lock:${chargeId}`);
   memRefundLocks.delete(chargeId);
@@ -320,25 +337,18 @@ app.get('/api/charges', async (req, res) => {
   res.json({ charges: await listCharges(Math.min(Number(req.query.limit) || 50, 200)) });
 });
 
-// Refund one purchase: gives the Stars back and removes that purchase's coins.
-//   /api/refund?secret=YOUR_SECRET&charge_id=THE_CHARGE_ID
-// For purchases made before charges were saved, add &user_id=BUYER_ID too;
-// the Stars are refunded but no coins can be removed automatically.
-app.get('/api/refund', async (req, res) => {
-  if (!adminOk(req)) return res.status(403).json({ error: 'Missing or wrong ?secret=' });
-
-  const chargeId = String(req.query.charge_id || '');
-  if (!chargeId) return res.status(400).json({ error: 'charge_id is required' });
-
+// Shared refund routine used by /api/refund and /api/refund-all.
+// Gives the Stars back, then removes that purchase's coins (never below zero).
+async function performRefund(chargeId, userIdHint) {
   const record = await getCharge(chargeId);
-  const userId = record ? record.userId : Number(req.query.user_id);
+  const userId = record ? record.userId : Number(userIdHint);
   if (!userId) {
-    return res.status(404).json({ error: 'Charge not found. If it is an older purchase, add &user_id=BUYER_ID' });
+    return { status: 404, body: { error: 'Charge not found. If it is an older purchase, add &user_id=BUYER_ID' } };
   }
-  if (record && record.refunded) return res.status(409).json({ error: 'Already refunded' });
+  if (record && record.refunded) return { status: 409, body: { error: 'Already refunded' } };
 
   if (!(await takeRefundLock(chargeId))) {
-    return res.status(409).json({ error: 'A refund for this charge is already in progress or done' });
+    return { status: 409, body: { error: 'A refund for this charge is already in progress or done' } };
   }
 
   try {
@@ -348,23 +358,119 @@ app.get('/api/refund', async (req, res) => {
     });
   } catch (err) {
     await releaseRefundLock(chargeId); // Telegram said no, so allow a retry
-    return res.status(502).json({ error: 'Telegram refused the refund', detail: String(err.description || err) });
+    return { status: 502, body: { error: 'Telegram refused the refund', detail: String(err.description || err) } };
   }
 
-  // Stars are back with the buyer. Now take the coins back (never below zero).
   let coinsRemoved = 0;
-  let newBalance = null;
   if (record) {
     const balance = await getBalance(userId);
     coinsRemoved = Math.min(record.coins || 0, balance);
+    let newBalance = balance;
     if (coinsRemoved > 0) newBalance = await addCoins(userId, -coinsRemoved);
-    else newBalance = balance;
     await syncLeaderboard(userId, newBalance ?? (await getBalance(userId)), record.name);
     await saveCharge(chargeId, { ...record, refunded: true, refundedAt: Date.now() });
   }
 
   console.log(`Refunded charge_id=${chargeId} user=${userId} coinsRemoved=${coinsRemoved}`);
-  res.json({ ok: true, chargeId, userId, starsRefunded: record ? record.stars : undefined, coinsRemoved });
+  return { status: 200, body: { ok: true, chargeId, userId, starsRefunded: record ? record.stars : undefined, coinsRemoved } };
+}
+
+// Refund one purchase:
+//   /api/refund?secret=YOUR_SECRET&charge_id=THE_CHARGE_ID
+// For purchases made before charges were saved, add &user_id=BUYER_ID too;
+// the Stars are refunded but no coins can be removed automatically.
+app.get('/api/refund', async (req, res) => {
+  if (!adminOk(req)) return res.status(403).json({ error: 'Missing or wrong ?secret=' });
+  const chargeId = String(req.query.charge_id || '');
+  if (!chargeId) return res.status(400).json({ error: 'charge_id is required' });
+  const result = await performRefund(chargeId, req.query.user_id);
+  res.status(result.status).json(result.body);
+});
+
+// Reads Telegram's own record of every Stars transaction on this bot and
+// returns the incoming purchases that have not been refunded yet.
+async function findUnrefundedPurchases() {
+  const all = [];
+  for (let offset = 0, page = 0; page < 50; page++) {
+    const batch = await bot.telegram.callApi('getStarTransactions', { offset, limit: 100 });
+    const txs = (batch && batch.transactions) || [];
+    all.push(...txs);
+    if (txs.length < 100) break;
+    offset += txs.length;
+  }
+
+  // A refund appears as an outgoing transaction that reuses the original's id.
+  const refundedIds = new Set(
+    all.filter((t) => t.receiver && t.receiver.type === 'user').map((t) => String(t.id))
+  );
+
+  const incoming = all
+    .filter((t) => t.source && t.source.type === 'user' && t.amount > 0)
+    .filter((t) => !t.source.transaction_type || t.source.transaction_type === 'invoice_payment')
+    .filter((t) => !refundedIds.has(String(t.id)));
+
+  const locked = await lockedChargeIds(incoming.map((t) => String(t.id)));
+
+  return incoming
+    .filter((t) => !locked.has(String(t.id)))
+    .map((t) => ({
+      chargeId: String(t.id),
+      userId: t.source.user.id,
+      name: t.source.user.username ? '@' + t.source.user.username : t.source.user.first_name,
+      stars: t.amount,
+      date: new Date(t.date * 1000).toISOString(),
+    }));
+}
+
+// Refund many purchases at once, including ones made before charges were saved.
+//   Preview (changes nothing): /api/refund-all?secret=YOUR_SECRET
+//   Only one buyer:            add &user_id=BUYER_ID
+//   Do it:                     add &confirm=yes
+// Large lists are done in rounds to fit Vercel's time limit: if the answer
+// says "remaining" is above 0, open the same link again.
+app.get('/api/refund-all', async (req, res) => {
+  if (!adminOk(req)) return res.status(403).json({ error: 'Missing or wrong ?secret=' });
+
+  let pending;
+  try {
+    pending = await findUnrefundedPurchases();
+  } catch (err) {
+    return res.status(502).json({ error: 'Could not read transactions from Telegram', detail: String(err.description || err) });
+  }
+  if (req.query.user_id) pending = pending.filter((p) => String(p.userId) === String(req.query.user_id));
+
+  const totalStars = pending.reduce((sum, p) => sum + p.stars, 0);
+
+  if (req.query.confirm !== 'yes') {
+    return res.json({
+      preview: true,
+      message: 'Nothing was refunded. Add &confirm=yes to the link to refund everything listed.',
+      purchases: pending.length,
+      totalStars,
+      list: pending,
+    });
+  }
+
+  const startedAt = Date.now();
+  const done = [];
+  const failed = [];
+  let skipped = 0;
+  for (const p of pending) {
+    if (Date.now() - startedAt > 7000) break; // stay inside the serverless time limit
+    const result = await performRefund(p.chargeId, p.userId);
+    if (result.status === 200) done.push({ chargeId: p.chargeId, userId: p.userId, stars: p.stars, coinsRemoved: result.body.coinsRemoved });
+    else if (result.status === 409) skipped++; // already refunded earlier
+    else failed.push({ chargeId: p.chargeId, userId: p.userId, error: result.body.error, detail: result.body.detail });
+  }
+
+  res.json({
+    refunded: done.length,
+    starsReturned: done.reduce((sum, d) => sum + d.stars, 0),
+    failed,
+    skipped,
+    remaining: pending.length - done.length - failed.length - skipped,
+    done,
+  });
 });
 
 module.exports = app;
